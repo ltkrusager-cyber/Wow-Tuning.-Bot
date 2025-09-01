@@ -1,6 +1,31 @@
-import discord, os, re
+import os
+import re
+import threading
+
+# ---- LILLE WEBSERVER (holder Render "awake") ----
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Wow Tuning Bot is running ✅"
+
+def run_web():
+    # Render stiller en PORT-miljøvariabel til rådighed
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+# Start Flask i en baggrundstråd, så Discord-klienten kan køre samtidig
+threading.Thread(target=run_web, daemon=True).start()
+
+
+# ---- DISCORD BOT ----
+import discord
 
 TOKEN = os.getenv("DISCORD_TOKEN")
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN mangler som environment variable.")
 
 # === UDFYLD DISSE ===
 SOURCE_CHANNEL_IDS = [
@@ -8,7 +33,7 @@ SOURCE_CHANNEL_IDS = [
     1411990706402365440,  # <- ID for #wowhead-news-tracker
 ]
 ALERT_CHANNEL_ID = 1411985043898765436  # <- ID for #class-tuning-alerts
-USER_ID = 444444444444444444  # <- (valgfri) dit user ID for DM
+USER_ID = 444444444444444444  # <- (valgfri) dit user ID for DM (0 = slået fra)
 
 KEYWORDS = ["tuning", "class tuning", "class changes"]
 
@@ -17,18 +42,19 @@ intents.messages = True
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# simple dupe-guard per run
+# simpel dupe-guard pr. proceskørsel
 seen_ids = set()
 
 
 def matches(text: str) -> bool:
+    """Returner True hvis en af KEYWORDS forekommer i teksten (case-insensitive)."""
     t = (text or "").lower()
     return any(k in t for k in KEYWORDS)
 
 
 def sanitize(text: str) -> str:
-    return text.replace("@everyone",
-                        "@\u200beveryone").replace("@here", "@\u200bhere")
+    """Neutraliser @everyone/@here så vi ikke pinger utilsigtet."""
+    return text.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
 
 
 @client.event
@@ -50,7 +76,7 @@ async def on_message(message: discord.Message):
     # tekst + evt. første link
     raw = message.content or ""
     first_link = None
-    m = re.search(r'(https?://\S+)', raw)
+    m = re.search(r"(https?://\S+)", raw)
     if m:
         first_link = m.group(1)
 
@@ -62,7 +88,7 @@ async def on_message(message: discord.Message):
         title = e.title
         url = e.url
 
-    # afgør om vi matcher på tekst+embed-titel
+    # tjek keywords på kombi af tekst + embed-titel
     if not matches(raw + " " + (title or "")):
         return
 
@@ -84,12 +110,14 @@ async def on_message(message: discord.Message):
         await alert_ch.send(out)
 
     # valgfri DM til dig
-    try:
-        if USER_ID:
+    if USER_ID:
+        try:
             user = await client.fetch_user(USER_ID)
             await user.send(out)
-    except Exception:
-        pass
+        except Exception:
+            # DM kan fejle hvis du ikke kan modtage beskeder fra bots/denne server
+            pass
 
 
-client.run(TOKEN)
+if __name__ == "__main__":
+    client.run(TOKEN)
